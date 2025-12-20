@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Gargantua Pilot HUD - Wide Feed</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Segoe UI', sans-serif; }
+        
+        /* --- LAYOUT --- */
+        #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; background: #000; }
+        
+        /* --- PIP VIDEO STYLING (Bottom Right Widescreen) --- */
+        #input_video {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            /* Changed height to fixed pixel value for rectangular look */
+            width: 320px;
+            height: 180px; 
+            /* Ensures video fills the rectangle without stretching */
+            object-fit: cover; 
+            
+            z-index: 50;
+            transform: scaleX(-1);
+            border: 2px solid #00e5ff;
+            border-radius: 6px;
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.4);
+            background: #000;
+        }
+
+        /* --- TECH OVERLAYS --- */
+        .hud-grid {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none;
+            background-image: 
+                linear-gradient(rgba(0, 229, 255, 0.1) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 229, 255, 0.1) 1px, transparent 1px);
+            background-size: 50px 50px;
+            opacity: 0.2;
+        }
+
+        .vignette {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none;
+            background: radial-gradient(circle, transparent 40%, black 95%);
+        }
+        
+        /* --- UI TEXT --- */
+        #ui {
+            position: absolute;
+            bottom: 30px;
+            left: 30px;
+            z-index: 10;
+            color: rgba(255, 255, 255, 0.9);
+            pointer-events: none;
+            text-shadow: 0 0 10px rgba(0,255,255,0.5);
+        }
+        h1 { margin: 0; font-size: 1.6rem; letter-spacing: 4px; text-transform: uppercase; font-weight: 400; color: #00e5ff; }
+        .sub { font-size: 0.85rem; color: #aaa; margin-bottom: 15px; letter-spacing: 1px; }
+        .guide { display: flex; flex-direction: column; gap: 6px; font-size: 0.9rem; }
+        .row { display: flex; align-items: center; gap: 10px; }
+        .key { color: #00e5ff; font-weight: bold; width: 110px; text-transform: uppercase; font-size: 0.8rem;}
+        .val { color: #ddd; font-weight: 300; }
+        .status { margin-top: 15px; color: #ff0055; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; }
+        
+        /* Corner Brackets */
+        .bracket { position: absolute; width: 50px; height: 50px; border: 2px solid #00e5ff; opacity: 0.5; z-index: 2; pointer-events: none; }
+        .tl { top: 20px; left: 20px; border-right: none; border-bottom: none; }
+        .tr { top: 20px; right: 20px; border-left: none; border-bottom: none; }
+        .bl { bottom: 20px; left: 20px; border-right: none; border-top: none; }
+
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div class="bracket tl"></div>
+    <div class="bracket tr"></div>
+    <div class="bracket bl"></div>
+    <div class="hud-grid"></div>
+    <div class="vignette"></div>
+
+    <div id="ui">
+        <h1>Pilot Link Active</h1>
+        <div class="sub">Neural Engine v2.4</div>
+        <div class="guide">
+            <div class="row"><span class="key">1 Finger</span> <span class="val" style="color:#aaddff;">Ice Saturn</span></div>
+            <div class="row"><span class="key">2 Fingers</span> <span class="val">DNA Helix</span></div>
+            <div class="row"><span class="key">3 Fingers</span> <span class="val" style="color:#ffae00;">Gargantua</span></div>
+            <div style="height:10px; border-bottom:1px solid #333; margin-bottom:10px;"></div>
+            <div class="row"><span class="key">🤏 Pinch</span> <span class="val">Zoom OUT</span></div>
+            <div class="row"><span class="key">🖐 Spread</span> <span class="val">Zoom IN</span></div>
+        </div>
+        <div id="status" class="status">Connecting Video Feed...</div>
+    </div>
+
+    <div id="canvas-container"></div>
+    <video id="input_video" autoplay playsinline></video>
+
+    <script type="module">
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js';
+
+        // --- Config ---
+        const PARTICLE_COUNT = 15000;
+        const PARTICLE_SIZE = 0.13;
+        const MORPH_SPEED = 0.04;
+
+        // --- Zoom Limits ---
+        const ZOOM_CLOSE = 4;
+        const ZOOM_FAR = 45;
+
+        // --- Globals ---
+        let scene, camera, renderer, particles, geometry, material;
+        let targetPositions = [];
+        let currentPositions = [];
+        let time = 0;
+        
+        let handPosition = new THREE.Vector3(0, 0, 0);
+        let activeShape = 'saturn';
+        
+        let targetCamZ = 25; 
+        let currentCamZ = 25;
+
+        initThree();
+        initMediaPipe();
+        animate();
+
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+            
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x000000, 0.02);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = currentCamZ;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            
+            renderer.setClearColor(0x000000, 1); 
+            container.appendChild(renderer.domElement);
+
+            geometry = new THREE.BufferGeometry();
+            const posArray = new Float32Array(PARTICLE_COUNT * 3);
+            const colorArray = new Float32Array(PARTICLE_COUNT * 3);
+
+            for(let i = 0; i < PARTICLE_COUNT; i++) {
+                currentPositions.push(0, 0, 0);
+                targetPositions.push(0, 0, 0);
+                colorArray[i*3] = 1; colorArray[i*3+1] = 1; colorArray[i*3+2] = 1;
+            }
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(posArray, 3));
+            geometry.setAttribute('color', new THREE.Float32BufferAttribute(colorArray, 3));
+
+            const sprite = new THREE.TextureLoader().load('https://threejs.org/examples/textures/sprites/spark1.png');
+
+            material = new THREE.PointsMaterial({
+                size: PARTICLE_SIZE,
+                map: sprite,
+                vertexColors: true,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false,
+                transparent: true,
+                opacity: 0.9
+            });
+
+            particles = new THREE.Points(geometry, material);
+            scene.add(particles);
+
+            window.addEventListener('resize', onWindowResize);
+            calculateShape('saturn');
+        }
+
+        function calculateShape(type) {
+            const colorArray = geometry.attributes.color.array;
+
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                let x, y, z;
+                let r, g, b;
+                const idx = i * 3;
+                const t = i / PARTICLE_COUNT;
+
+                if (type === 'saturn') {
+                    if (i < PARTICLE_COUNT * 0.25) {
+                        const rad = 2.0;
+                        const phi = Math.acos(-1 + (2 * i) / (PARTICLE_COUNT * 0.25));
+                        const theta = Math.sqrt((PARTICLE_COUNT * 0.25) * Math.PI) * phi;
+                        x = rad * Math.sin(phi) * Math.cos(theta);
+                        y = rad * Math.sin(phi) * Math.sin(theta);
+                        z = rad * Math.cos(phi);
+                        r=0.9; g=0.95; b=1.0; 
+                    } else {
+                        const angle = Math.random() * Math.PI * 2;
+                        const ringRad = 3.2 + Math.random() * 4.5; 
+                        x = ringRad * Math.cos(angle);
+                        z = ringRad * Math.sin(angle);
+                        y = (Math.random() - 0.5) * 0.2; 
+                        
+                        const tx = x; 
+                        const ty = y * Math.cos(0.4) - z * Math.sin(0.4);
+                        const tz = y * Math.sin(0.4) + z * Math.cos(0.4);
+                        x=tx; y=ty; z=tz;
+
+                        const dist = Math.sqrt(x*x + z*z);
+                        if (dist > 5.5 && dist < 6.5) { r=0.1; g=0.2; b=0.6; } 
+                        else { r=0.4; g=0.8; b=1.0; }
+                    }
+
+                } else if (type === 'dna') {
+                    const len = 18;
+                    const turns = 5;
+                    const radius = 2.2;
+                    const h = (t - 0.5) * len;
+                    const angle = (h / len) * (Math.PI * 2 * turns);
+                    const isStrandB = (i % 2 === 0);
+                    const phase = isStrandB ? Math.PI : 0;
+                    
+                    x = radius * Math.cos(angle + phase);
+                    z = radius * Math.sin(angle + phase);
+                    y = h;
+                    x += (Math.random()-0.5) * 0.4; z += (Math.random()-0.5) * 0.4; y += (Math.random()-0.5) * 0.4;
+
+                    const tilt = 0.7;
+                    const ty = y * Math.cos(tilt) - z * Math.sin(tilt);
+                    const tz = y * Math.sin(tilt) + z * Math.cos(tilt);
+                    y = ty; z = tz;
+
+                    if (isStrandB) { r=0.0; g=0.5; b=1.0; } else { r=0.0; g=1.0; b=1.0; }
+                    if (Math.random() > 0.95) { r=1; g=1; b=1; }
+
+                } else if (type === 'blackhole') {
+                    const isDisk = i < PARTICLE_COUNT * 0.65;
+                    if (isDisk) {
+                        const angle = Math.random() * Math.PI * 2;
+                        const bias = Math.pow(Math.random(), 3); 
+                        const rad = 2.6 + bias * 6.0; 
+                        x = rad * Math.cos(angle);
+                        z = rad * Math.sin(angle);
+                        y = (Math.random() - 0.5) * 0.15;
+
+                        if (rad < 3.2) { r=1.0; g=1.0; b=0.9; } 
+                        else if (rad < 4.5) { r=1.0; g=0.6; b=0.1; } 
+                        else { r=0.8; g=0.1; b=0.05; }
+                    } else {
+                        const angle = Math.random() * Math.PI * 2;
+                        const rad = 2.7 + Math.random() * 2.0;
+                        x = rad * Math.cos(angle);
+                        y = rad * Math.sin(angle);
+                        z = (Math.random() - 0.5) * 1.5;
+                        
+                        const archIntensity = Math.abs(Math.sin(angle));
+                        r=1.0 * archIntensity; g=0.7 * archIntensity; b=0.3 * archIntensity;
+                    }
+                    const tiltX = 0.2;
+                    let ty = y * Math.cos(tiltX) - z * Math.sin(tiltX);
+                    let tz = y * Math.sin(tiltX) + z * Math.cos(tiltX);
+                    y = ty; z = tz;
+                }
+
+                targetPositions[idx] = x;
+                targetPositions[idx+1] = y;
+                targetPositions[idx+2] = z;
+                colorArray[idx] = r;
+                colorArray[idx+1] = g;
+                colorArray[idx+2] = b;
+            }
+            geometry.attributes.color.needsUpdate = true;
+        }
+
+        function initMediaPipe() {
+            const videoElement = document.getElementById('input_video');
+            const hands = new window.Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+            
+            hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+            hands.onResults(onHandsResults);
+
+            const cameraUtils = new window.Camera(videoElement, {
+                onFrame: async () => { await hands.send({image: videoElement}); },
+                width: 640, height: 480
+            });
+            cameraUtils.start();
+        }
+
+        function onHandsResults(results) {
+            const status = document.getElementById('status');
+            
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                status.innerText = "Target Acquired";
+                status.style.color = "#00e5ff";
+                
+                const lm = results.multiHandLandmarks[0];
+                const tx = (0.5 - lm[9].x) * 15;
+                const ty = (0.5 - lm[9].y) * 10;
+                handPosition.lerp(new THREE.Vector3(tx, ty, 0), 0.1);
+
+                const fingers = countFingers(lm);
+                let newShape = activeShape;
+                if (fingers === 1) newShape = 'saturn';
+                if (fingers === 2) newShape = 'dna';
+                if (fingers >= 3) newShape = 'blackhole';
+                
+                if (newShape !== activeShape) {
+                    activeShape = newShape;
+                    calculateShape(activeShape);
+                }
+
+                const thumbTip = lm[4];
+                const middleTip = lm[12];
+                const distance = Math.sqrt(Math.pow(thumbTip.x - middleTip.x, 2) + Math.pow(thumbTip.y - middleTip.y, 2));
+                const clampMin = 0.03; const clampMax = 0.22; 
+                const clampedDist = Math.max(clampMin, Math.min(clampMax, distance));
+                const ratio = (clampedDist - clampMin) / (clampMax - clampMin);
+                targetCamZ = ZOOM_FAR - (ratio * (ZOOM_FAR - ZOOM_CLOSE));
+
+            } else {
+                status.innerText = "No Pilot Detected...";
+                status.style.color = "#ff0055";
+            }
+        }
+
+        function countFingers(lm) {
+            let count = 0;
+            if (lm[8].y < lm[6].y) count++; if (lm[12].y < lm[10].y) count++;
+            if (lm[16].y < lm[14].y) count++; if (lm[20].y < lm[18].y) count++;
+            return count;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            time += 0.01;
+
+            currentCamZ += (targetCamZ - currentCamZ) * 0.08;
+            camera.position.z = currentCamZ;
+
+            const positions = geometry.attributes.position.array;
+            
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const idx = i * 3;
+                let tx = targetPositions[idx];
+                let ty = targetPositions[idx+1];
+                let tz = targetPositions[idx+2];
+
+                if (activeShape === 'dna') {
+                    const rot = -time * 0.3;
+                    const ox = tx; tx = tx * Math.cos(rot) - tz * Math.sin(rot); tz = ox * Math.sin(rot) + tz * Math.cos(rot);
+                }
+                if (activeShape === 'blackhole') {
+                    const rot = time * 0.1;
+                    const ox = tx; const oz = tz; tx = tx * Math.cos(rot) - tz * Math.sin(rot); tz = tx * Math.sin(rot) + tz * Math.cos(rot);
+                }
+                if (activeShape === 'saturn') {
+                    const rot = time * 0.05;
+                    const ox = tx; const oz = tz; tx = tx * Math.cos(rot) - tz * Math.sin(rot); tz = tx * Math.sin(rot) + tz * Math.cos(rot);
+                }
+                
+                tx += handPosition.x; ty += handPosition.y;
+
+                currentPositions[idx] += (tx - currentPositions[idx]) * MORPH_SPEED;
+                currentPositions[idx+1] += (ty - currentPositions[idx+1]) * MORPH_SPEED;
+                currentPositions[idx+2] += (tz - currentPositions[idx+2]) * MORPH_SPEED;
+
+                positions[idx] = currentPositions[idx]; positions[idx+1] = currentPositions[idx+1]; positions[idx+2] = currentPositions[idx+2];
+            }
+            camera.rotation.z = Math.sin(time * 0.15) * 0.02;
+            geometry.attributes.position.needsUpdate = true;
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    </script>
+</body>
+</html>
