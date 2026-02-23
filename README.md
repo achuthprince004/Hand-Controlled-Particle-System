@@ -1,4 +1,6 @@
 # 🖐️ Hand-Controlled Particle System
+<img width="1919" height="910" alt="image" src="https://github.com/user-attachments/assets/89f25c16-5e90-4d39-a66f-3cd6bded7334" />
+
 
 A real-time **WebGL experience** where hand gestures dynamically morph cinematic 3D particle structures using **Three.js** and **MediaPipe Hands**.
 
